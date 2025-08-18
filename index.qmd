@@ -1,6 +1,6 @@
 ---
 title: "Lab 7"
-subtitle: "Bootstrap Uncertainty Quantification"
+subtitle: "Bayesian Calibration Implementation"
 author: CEVE 543 Fall 2025
 date: "2025-10-17"
 
@@ -32,4 +32,10 @@ code-overflow: wrap
 code-line-numbers: false
 code-block-font-size: "0.85em"
 ---
+
+## Topics
+
+- Turing.jl inference setup
+- Prior specification for hydro parameters
+- MCMC sampling & diagnostics
 
