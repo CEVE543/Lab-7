@@ -1,8 +1,16 @@
 ---
-title: "Lab 7"
-subtitle: "Bayesian Calibration Implementation"
+title: "Lab 7: Model Implementation"
+subtitle: "Coding run_hydromodel function, Time-stepping loops, Basic hydrograph visualization"
 author: CEVE 543 Fall 2025
 date: "2025-10-17"
+type: "lab"
+module: 2
+week: 7
+objectives:
+  - "Implement hydrological model time-stepping algorithms"
+  - "Code the run_hydromodel function with proper structure"
+  - "Create basic hydrograph visualization and analysis tools"
+ps_connection: "Builds hydrological model implementation skills for PS2 Task 1"
 
 engine: julia
 
@@ -12,7 +20,7 @@ format:
     toc-depth: 2
     code-block-bg: "#f8f8f8"
     code-block-border-left: "#e1e4e5"
-    theme: default
+    theme: cosmo
     number-sections: true
     fig-format: svg
   typst:
@@ -35,7 +43,7 @@ code-block-font-size: "0.85em"
 
 ## Topics
 
-- Turing.jl inference setup
-- Prior specification for hydro parameters
-- MCMC sampling & diagnostics
+- Coding run_hydromodel function
+- Time-stepping loops
+- Basic hydrograph visualization
 
