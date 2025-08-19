@@ -1,16 +1,17 @@
 ---
-title: "Lab 7: Model Implementation"
-subtitle: "Coding run_hydromodel function, Time-stepping loops, Basic hydrograph visualization"
+title: "Lab 7: Model Implementation and Testing"
+subtitle: "Hydrological model implementation, time-stepping algorithms, validation strategies"
 author: CEVE 543 Fall 2025
 date: "2025-10-17"
 type: "lab"
 module: 2
-week: 7
+week: 9
 objectives:
   - "Implement hydrological model time-stepping algorithms"
   - "Code the run_hydromodel function with proper structure"
-  - "Create basic hydrograph visualization and analysis tools"
-ps_connection: "Builds hydrological model implementation skills for PS2 Task 1"
+  - "Test model implementation and validate results"
+  - "Establish foundation for calibration exercises"
+ps_connection: "Builds hydrological model implementation skills for PS2 Task 1 (implementing and testing the snowmelt-runoff model)"
 
 engine: julia
 
@@ -43,7 +44,8 @@ code-block-font-size: "0.85em"
 
 ## Topics
 
-- Coding run_hydromodel function
-- Time-stepping loops
-- Basic hydrograph visualization
+- Hydrological model implementation
+- Time-stepping algorithms and mass balance
+- Model testing and validation
+- Foundation for calibration
 
