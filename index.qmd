@@ -1,5 +1,5 @@
 ---
-title: "Lab 7: Model Implementation and Testing"
+title: "CEVE 543 Fall 2025 Lab 7: Model Implementation and Testing"
 subtitle: "Hydrological model implementation, time-stepping algorithms, validation strategies"
 author: CEVE 543 Fall 2025
 date: "2025-10-17"
