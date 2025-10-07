@@ -1,17 +1,16 @@
 ---
-title: "CEVE 543 Fall 2025 Lab 7: Model Implementation and Testing"
-subtitle: "Hydrological model implementation, time-stepping algorithms, validation strategies"
+title: "CEVE 543 Fall 2025 Lab 7: Bayesian Calibration"
+subtitle: "Turing.jl inference setup, Prior specification for hydro parameters, MCMC sampling and diagnostics"
 author: CEVE 543 Fall 2025
-date: "2025-10-17"
+date: "2025-10-24"
 type: "lab"
 module: 2
-week: 9
+week: 10
 objectives:
-  - "Implement hydrological model time-stepping algorithms"
-  - "Code the run_hydromodel function with proper structure"
-  - "Test model implementation and validate results"
-  - "Establish foundation for calibration exercises"
-ps_connection: "Builds hydrological model implementation skills for PS2 Task 1 (implementing and testing the snowmelt-runoff model)"
+  - "Set up Bayesian inference for hydrological model parameters"
+  - "Specify appropriate priors for hydrological parameters"
+  - "Run MCMC sampling and perform convergence diagnostics"
+ps_connection: "Provides Bayesian calibration toolkit for PS2 Task 2 (calibrating model using MCMC and validating against observations)"
 
 engine: julia
 
@@ -44,10 +43,9 @@ code-block-font-size: "0.85em"
 
 ## Objectives
 
-1. Implement hydrological model time-stepping algorithms
-1. Code the run_hydromodel function with proper structure
-1. Test model implementation and validate results
-1. Establish foundation for calibration exercises
+1. Set up Bayesian inference for hydrological model parameters
+1. Specify appropriate priors for hydrological parameters
+1. Run MCMC sampling and perform convergence diagnostics
 
 ## Before
 
@@ -65,10 +63,10 @@ Do this before the lab date so that lab itself can go more smoothly.
 
 Modify the code section below to address the following tasks.
 
-1. Implement hydrological model time-stepping algorithms with mass balance
-1. Code the run_hydromodel function following proper software structure
-1. Test model implementation against known benchmarks and validate results
-1. Establish foundation for upcoming calibration and uncertainty exercises
+1. Set up Bayesian inference framework for hydrological model parameters
+1. Specify appropriate prior distributions for hydrological parameters
+1. Run MCMC sampling chains and perform convergence diagnostics
+1. Analyze posterior parameter distributions and assess calibration quality
 
 ## Code
 

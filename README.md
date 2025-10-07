@@ -1,29 +1,29 @@
-# Lab 7: Model Implementation and Testing
+# Lab 8: Bayesian Calibration
 
-**Date:** October 17, 2025 | **Module:** 2 | **Week:** 9
+**Date:** October 24, 2025 | **Module:** 2 | **Week:** 10
 
 ## Overview
 
-This lab introduces students to hydrological model implementation by coding conceptual snowmelt-runoff models and implementing proper testing strategies. Students will translate physical processes into computational algorithms and establish validation approaches for model calibration.
+This lab introduces Bayesian parameter estimation for hydrological models. Students will learn to set up Bayesian inference problems using Turing.jl, specify appropriate priors for hydrological parameters, and run MCMC sampling with proper convergence diagnostics.
 
 ## Topics Covered
 
-- Hydrological model implementation and structure
-- Time-stepping algorithms and mass balance preservation
-- Model testing and validation strategies
-- Foundation for Bayesian calibration exercises
-- Error checking and debugging hydrological models
+- Turing.jl inference setup for hydrological models
+- Prior specification strategies for hydro parameters
+- MCMC sampling techniques and implementation
+- Convergence diagnostics and chain analysis
+- Posterior predictive checking for model validation
 
 ## Objectives
 
-- Implement hydrological model time-stepping algorithms
-- Code the run_hydromodel function with proper structure
-- Test model implementation and validate results
-- Establish foundation for calibration exercises
+- Set up Bayesian inference for hydrological model parameters
+- Specify appropriate priors for hydrological parameters
+- Run MCMC sampling and perform convergence diagnostics
+- Understand the advantages of Bayesian calibration for uncertainty quantification
 
 ## Connection to Problem Sets
 
-This lab builds the hydrological model implementation skills that students will need for PS2 Task 1 (implementing and testing the snowmelt-runoff model), providing the foundation for subsequent calibration and uncertainty analysis.
+This lab provides the Bayesian calibration toolkit that students will use for PS2 Task 2 (calibrating model using MCMC and validating against observations), enabling rigorous parameter estimation and uncertainty quantification for hydrological models.
 
 ---
 
