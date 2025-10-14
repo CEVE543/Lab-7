@@ -1,16 +1,17 @@
 ---
-title: "CEVE 543 Fall 2025 Lab 7: Bayesian Calibration"
-subtitle: "Turing.jl inference setup, Prior specification for hydro parameters, MCMC sampling and diagnostics"
+title: "CEVE 543 Fall 2025 Lab 7: Bias Correction Implementation"
+subtitle: "Quantile mapping and delta method for temperature and precipitation"
 author: CEVE 543 Fall 2025
 date: "2025-10-24"
 type: "lab"
 module: 2
 week: 10
 objectives:
-  - "Set up Bayesian inference for hydrological model parameters"
-  - "Specify appropriate priors for hydrological parameters"
-  - "Run MCMC sampling and perform convergence diagnostics"
-ps_connection: "Provides Bayesian calibration toolkit for PS2 Task 2 (calibrating model using MCMC and validating against observations)"
+  - "Implement quantile mapping for bias correction"
+  - "Apply delta method to temperature and precipitation data"
+  - "Validate bias correction results and understand limitations"
+  - "Compare different bias correction approaches"
+ps_connection: "Provides hands-on practice with bias correction methods for PS2 Part 1"
 
 engine: julia
 
@@ -43,9 +44,10 @@ code-block-font-size: "0.85em"
 
 ## Objectives
 
-1. Set up Bayesian inference for hydrological model parameters
-1. Specify appropriate priors for hydrological parameters
-1. Run MCMC sampling and perform convergence diagnostics
+1. Implement quantile mapping for bias correction
+1. Apply delta method to temperature and precipitation data
+1. Validate bias correction results and understand limitations
+1. Compare different bias correction approaches
 
 ## Before
 
@@ -63,10 +65,18 @@ Do this before the lab date so that lab itself can go more smoothly.
 
 Modify the code section below to address the following tasks.
 
-1. Set up Bayesian inference framework for hydrological model parameters
-1. Specify appropriate prior distributions for hydrological parameters
-1. Run MCMC sampling chains and perform convergence diagnostics
-1. Analyze posterior parameter distributions and assess calibration quality
+1. Implement quantile-quantile mapping for temperature bias correction
+1. Apply delta method to precipitation data
+1. Validate bias-corrected output against observations
+1. Compare strengths and limitations of different bias correction approaches
 
 ## Code
+
+```{julia}
+#| output: false
+using Pkg
+lab_dir = dirname(@__FILE__)
+Pkg.activate(lab_dir)
+# Pkg.instantiate() # uncomment this the first time you run the lab to install packages, then comment it back
+```
 
