@@ -1,16 +1,17 @@
 ---
 title: "CEVE 543 Fall 2025 Lab 7: Bias Correction Implementation"
-subtitle: "Quantile mapping and delta method for temperature and precipitation"
+subtitle: "Delta method and quantile mapping for temperature bias correction"
 author: CEVE 543 Fall 2025
 date: "2025-10-24"
 type: "lab"
 module: 2
 week: 10
 objectives:
-  - "Implement quantile mapping for bias correction"
-  - "Apply delta method to temperature and precipitation data"
-  - "Validate bias correction results and understand limitations"
-  - "Compare different bias correction approaches"
+  - "Implement delta method (additive) for temperature bias correction"
+  - "Implement quantile-quantile mapping using empirical or parametric distributions"
+  - "Handle practical data challenges: missing values, time alignment, unit conversion"
+  - "Validate and compare bias correction approaches"
+  - "Understand limitations and appropriate use cases for each method"
 ps_connection: "Provides hands-on practice with bias correction methods for PS2 Part 1"
 
 engine: julia
@@ -26,13 +27,13 @@ format:
     fig-format: svg
   typst:
     fontsize: 11pt
-    margin: 
+    margin:
       x: 1in
       y: 1in
     number-sections: true
     fig-format: svg
 
-execute: 
+execute:
   cache: true
   freeze: auto
 
@@ -40,37 +41,225 @@ execute:
 code-overflow: wrap
 code-line-numbers: false
 code-block-font-size: "0.85em"
+
+bibliography: ../../references.bib
 ---
 
-## Objectives
+## Background and Goals
 
-1. Implement quantile mapping for bias correction
-1. Apply delta method to temperature and precipitation data
-1. Validate bias correction results and understand limitations
-1. Compare different bias correction approaches
+Climate models have systematic biases that directly affect impact assessments.
+Even when models capture large-scale dynamics reasonably well, they often exhibit persistent biases in temperature and precipitation at local scales.
+These biases arise from multiple sources: coarse spatial resolution, parameterization of sub-grid processes, representation of topography, and errors in simulated circulation patterns.
 
-## Before
+As we discussed in the [October 20 lecture](/lectures/2025-10-20/index.qmd), bias correction methods aim to adjust climate model output to better match observed statistical properties.
+This lab focuses on two widely-used approaches: the delta method and quantile-quantile (QQ) mapping.
+The delta method preserves the climate model's change signal while anchoring absolute values to observations.
+QQ-mapping corrects both the mean and the full distribution of values, addressing biases in frequency and intensity.
+
+Both methods make important assumptions about stationarity, meaning they assume the statistical relationship between model and observations remains constant across climate states.
+This assumption may not hold under significant climate change, particularly for variables whose generating processes shift (e.g., from frontal to convective precipitation, or changes in circulation regimes).
+
+Wednesday's discussion of @ines_biascorrection:2006 will explore these methods in the context of crop modeling, where the frequency and intensity of rainfall events matters as much as total amounts.
+This lab gives you hands-on experience implementing these algorithms before diving into PS2 Part 1, where you'll apply and compare them for different scenarios.
+
+## Study Location and Data
+
+This lab uses temperature data for **Boston Logan International Airport** in Massachusetts.
+
+Station information:
+
+- Station ID: USW00014739
+- Coordinates: 42.3631$^\circ$N, 71.0064$^\circ$W
+- Time zone: UTC-5 (Eastern Standard Time)
+- Data file: `4149316.csv` (GHCN-Daily average temperature, 1936-2024)
+
+We'll use the GFDL-ESM4 model (NOAA Geophysical Fluid Dynamics Laboratory Earth System Model version 4).
+The model provides 3-hourly near-surface air temperature (`tas`) on a global grid.
+The data are hosted on Google Cloud Platform as part of the [CMIP6 Public Data](https://console.cloud.google.com/marketplace/product/noaa-public/cmip6) program.
+
+Google Cloud Storage paths:
+
+- Historical (1850-2014): `gs://cmip6/CMIP6/CMIP/NOAA-GFDL/GFDL-ESM4/historical/r1i1p1f1/3hr/tas/gr1/v20180701/`
+- SSP3-7.0 scenario (2015-2100): `gs://cmip6/CMIP6/ScenarioMIP/NOAA-GFDL/GFDL-ESM4/ssp370/r1i1p1f1/3hr/tas/gr1/v20180701/`
+
+Refer to [Lab 6](/labs/Lab-6/index.qmd) for details on the CMIP6 data structure and naming conventions.
+
+### About the Data Download Script
+
+The `download_data.jl` script in this directory downloads CMIP6 data for Boston from Google Cloud Storage.
+It demonstrates several important concepts:
+
+**Accessing cloud-hosted climate data:**
+The script uses YAXArrays.jl and Zarr.jl to directly access CMIP6 data stored on Google Cloud Storage without downloading entire global datasets.
+This is possible because the data is stored in Zarr format, which supports efficient partial reads.
+
+**Spatial subsetting:**
+The script selects the nearest grid cell to Boston's coordinates using DimensionalData's `At()` selector with a tolerance, since climate models use coarse grids (typically 1-2$^\circ$ resolution).
+
+**Chunking challenges:**
+CMIP6 data on Google Cloud is chunked for spatial access (entire lat/lon grids for short time periods).
+When extracting a single location's time series, you must download many spatial chunks even though you only need one grid cell from each.
+This makes point extraction slow but is unavoidable with the current data structure.
+The script uses `setchunks()` to rechunk the extracted time series for efficient sequential access in the saved NetCDF files.
+
+**Why data is pre-downloaded:**
+Downloading the full historical dataset (165 years of 3-hourly data) takes several minutes due to the chunking issue described above.
+To save time in lab, the data files have been pre-downloaded and included in the repository.
+If you're interested in applying these methods to a different location, you can modify the coordinates in `download_data.jl` and run it yourself.
+
+The GHCN data provides daily average temperature in Fahrenheit, while CMIP6 provides 3-hourly instantaneous temperature in Kelvin.
+Boston is in the Eastern Time Zone (UTC-5 for EST, UTC-4 for EDT).
+For this lab, we'll use a simplified approach: aggregate 8 consecutive 3-hour periods starting at 03:00 UTC to approximate local daily averages.
+This approximation ignores daylight saving time changes and the distinction between instantaneous vs average temperature, but it's reasonable for our purposes and typical in many bias correction applications.
+In operational settings, you would want to handle these details more carefully.
+
+The pre-downloaded NetCDF files are:
+
+- `boston_historical.nc` - Historical scenario (1850-2014)
+- `boston_ssp370.nc` - SSP3-7.0 future scenario (2015-2100)
+
+Both files contain 3-hourly surface air temperature data from the GFDL-ESM4 model for the grid cell nearest to Boston (42.36$^\circ$N, 288.99$^\circ$E).
 
 ::: {.callout-important}
-## Instructions
+## Before Starting
 
-Do this before the lab date so that lab itself can go more smoothly.
+Before starting the lab, uncomment the `Pkg.instantiate()` line in the first code block and run it to install all required packages.
+This will take a few minutes the first time.
+After installation completes, comment the line back out to avoid reinstalling on subsequent runs.
 :::
 
-## Background and Reading
+## Solution
 
-<!-- Content will be added here -->
+### Task 2: Load and Process CMIP6 Data
 
-## Tasks
+Load the pre-downloaded CMIP6 NetCDF files and aggregate the 3-hourly temperature data to daily values.
 
-Modify the code section below to address the following tasks.
+The NetCDF files contain 3-hourly surface air temperature (`tas`) with time coordinates.
+You need to:
 
-1. Implement quantile-quantile mapping for temperature bias correction
-1. Apply delta method to precipitation data
-1. Validate bias-corrected output against observations
-1. Compare strengths and limitations of different bias correction approaches
+1. Load both files using `NCDataset()` from NCDatasets.jl
+2. Extract the temperature and time arrays from each file
+3. Convert the CFTime dates to Julia `DateTime` objects
+4. Select time periods for analysis:
+   - Historical period that overlaps with observations (e.g., 1995-2014)
+   - Two future periods to compare (e.g., near-term 2020-2040 and far-term 2070-2099)
+5. Aggregate 3-hourly data to daily averages
+6. Convert units from Kelvin to Fahrenheit to match observations
+7. Create DataFrames with date, temperature, year, and month columns
+8. Visualize the annual cycle comparing observations vs model for the historical period
+
+Time aggregation mathematical formula:
+
+For each day $d$, compute the mean of 8 consecutive 3-hourly values:
+$$\bar{T}_d = \frac{1}{8}\sum_{i=1}^{8} T_{3hr,i}$$
+
+Unit conversion:
+$$T_F = (T_K - 273.15) \times \frac{9}{5} + 32$$
+
+The time coordinates in the NetCDF file use CFTime.DateTimeNoLeap format.
+You can convert to Julia DateTime by extracting year, month, day, hour using the `Dates` functions (`year()`, `month()`, `day()`, `hour()`) and constructing a new `DateTime` object.
+
+Use `mean()` from Statistics.jl and `skipmissing()` to handle any missing values in the aggregation.
+
+Validation checks:
+
+- Each year should have approximately 365-366 daily values
+- Boston daily average temperatures typically range from 20$^\circ$F in winter to 75$^\circ$F in summer
+- The annual cycle should show clear seasonal variation
+
+### Task 3: Implement Delta Method
+
+Implement the additive delta method for temperature bias correction.
+
+The delta method assumes the climate model's change signal is credible but its absolute values are biased.
+For temperature, we use an additive correction by calendar month to account for seasonal variations in bias.
+
+Let $T^\text{obs}_\text{hist}$ be observed temperature in the historical period (1995-2014), $T^\text{GCM}_\text{hist}$ be modeled temperature in the historical period, and $T^\text{GCM}_\text{fut}$ be modeled temperature in a future period.
+
+**Step 1: Calculate monthly bias from the historical period (1995-2014).**
+
+For each calendar month $m$ (January through December), calculate the mean bias by pooling all years in the historical period:
+$$
+\Delta_m = \bar{T}^\text{GCM}_{\text{hist},m} - \bar{T}^\text{obs}_{\text{hist},m}
+$$
+
+where the overbar indicates the mean over all days in month $m$ across all years 1995-2014.
+
+**Step 2: Apply the correction to future values.**
+
+For each future time period, apply the monthly bias correction:
+$$
+T^\text{corr}_{\text{fut}}(d, m, y) = T^\text{GCM}_{\text{fut}}(d, m, y) - \Delta_m
+$$
+
+where $d$ is the day of month, $m$ is the calendar month, and $y$ is the year.
+
+**Key insight:** This approach uses the 1995-2014 monthly climatology as the reference.
+When you apply the delta method to future data (e.g., 2020-2040 or 2070-2099), you are effectively asking: "What would this future temperature look like if we adjusted the model's baseline to match the observed 1995-2014 climatology?"
+The warming signal (difference between future and historical periods) is preserved because we subtract the same $\Delta_m$ from all values in a given month.
+
+**Expected behavior:** If you apply the delta method to the historical GCM data (1995-2014) itself, the corrected monthly means should exactly match the observed monthly means from 1995-2014.
+This is because the correction is designed to eliminate the mean bias by month.
+
+Calculate monthly mean temperatures for observations and model during the historical period, compute the monthly bias $\Delta_m$ for each of the 12 calendar months, and apply the bias correction to your future scenarios.
+Verify that the warming signal is preserved by comparing the raw and corrected warming.
+
+### Task 4: Implement Quantile-Quantile Mapping
+
+Implement QQ-mapping to correct the full distribution of temperature values.
+
+Unlike the delta method, QQ-mapping transforms the entire probability distribution of model output to match observations.
+For each value in the model output, we find its percentile in the model distribution, then map it to the same percentile in the observed distribution.
+
+Let $F^\text{obs}_\text{hist}$ be the cumulative distribution function (CDF) of observed historical temperatures and $F^\text{GCM}_\text{hist}$ be the CDF of modeled historical temperatures.
+
+For each future model value $T^\text{GCM}_{\text{fut},i}$:
+
+1. Find its percentile in the model distribution: $p_i = F^\text{GCM}_\text{hist}(T^\text{GCM}_{\text{fut},i})$
+2. Map to the same percentile in the observed distribution: $T^\text{corr}_{\text{fut},i} = (F^\text{obs}_\text{hist})^{-1}(p_i)$
+
+where $(F^\text{obs}_\text{hist})^{-1}$ is the quantile function (inverse CDF).
+
+Use `ecdf()` from StatsBase.jl to fit empirical CDFs to historical data, then apply the mapping by finding percentiles with the ECDF and mapping to the corresponding quantile in the observed distribution using `quantile()`.
+Clamp percentiles to a valid range (e.g., 0.001 to 0.999) to avoid extrapolation issues at the tails.
+
+Useful visualizations include QQ-plots comparing observed vs model quantiles before and after correction, CDFs of observed/raw/corrected temperatures, and histograms or density plots comparing distributions.
+
+### Task 5: Compare and Validate
+
+Compare the delta method and QQ-mapping approaches by examining three key aspects:
+
+**1. Annual cycle preservation:**
+Create a figure showing the monthly mean temperature for the near-term period (2020-2040) using all four approaches: historical observations, raw GCM, delta-corrected, and QQ-mapped.
+This shows how each method adjusts the seasonal cycle.
+
+**2. Warming signal preservation:**
+Calculate the warming signal (difference between near-term and historical periods) by season for each method.
+Visualize these as a grouped bar plot.
+The delta method should preserve the raw GCM warming signal by construction.
+How does QQ-mapping compare?
+
+**Key questions to address in your reflection (Task 6):**
+
+- Which method better preserves the climate change signal (warming trend)?
+- How do the two methods differ in their treatment of the seasonal cycle?
+- Based on the annual cycle figure, which method appears more suitable for this application?
+- What assumptions does each method make, and when might those assumptions be violated?
+There's no single "right" answer, you're exploring the strengths and limitations of each method.
+
+### Task 6: Reflection
+
+Write brief responses (2-3 sentences each) to the following questions:
+
+1. Remaining biases: What biases or issues remain in your corrected temperature data? Why do these persist even after bias correction?
+
+2. Method selection: If you were providing climate data to support a decision about urban heat management in Boston, which bias correction method would you recommend and why?
+
+3. Stationarity assumption: Both methods assume the statistical relationship between model and observations is stationary (doesn't change over time). Under what conditions might this assumption break down for temperature data?
 
 ## Code
+
+All packages you need have been installed in the project environment.
 
 ```{julia}
 #| output: false
@@ -80,3 +269,605 @@ Pkg.activate(lab_dir)
 # Pkg.instantiate() # uncomment this the first time you run the lab to install packages, then comment it back
 ```
 
+```{julia}
+#| output: false
+using CSV, CairoMakie, DataFrames, Dates, NCDatasets, Statistics, StatsBase
+ENV["DATAFRAMES_ROWS"] = 5
+using TidierData
+```
+
+## Solution
+
+### Task 1: Load and Explore Observational Data
+
+::: {.callout-note}
+## Task
+
+Load the Boston GHCN temperature data from `4149316.csv` and explore its characteristics.
+Load the CSV file, parse dates, handle missing values, and calculate data completeness by year.
+Identify years with at least 80% complete data (approximately 292+ days for non-leap years).
+Create visualizations showing the full time series and the mean annual cycle.
+:::
+
+```{julia}
+# Load and clean the observational data
+data_path = joinpath(lab_dir, "USW00014739.csv")
+df = @chain begin
+    CSV.read(data_path, DataFrame)
+    @mutate(
+        TAVG = ifelse.(ismissing.(TMIN) .| ismissing.(TMAX), missing, (TMIN .+ TMAX) ./ 2),
+    )
+    @mutate(TAVG = TAVG / 10.0) # to degrees F
+    @rename(date = DATE)
+    @mutate(
+        year = year(date),
+        month = month(date),
+    )
+    @select(date, year, month, TAVG)
+end
+```
+
+```{julia}
+# Calculate data completeness by year
+yearly_counts = @chain df begin
+    @group_by(year)
+    @summarize(
+        n_obs = sum(!ismissing(TAVG)),
+        n_total = n(),
+    )
+    @mutate(
+        frac_complete = n_obs / n_total
+    )
+end
+```
+
+# Filter for years with at least 80% complete data
+```{julia}
+good_years_df = @chain yearly_counts begin
+    @filter(frac_complete >= 0.8)
+end
+good_years = good_years_df.year
+good_years_df
+```
+
+```{julia}
+# Create a clean dataset with only complete years
+df_clean = @chain df begin
+    @filter(year in !!good_years)
+    dropmissing(:TAVG)
+end
+```
+
+```{julia}
+# Calculate and plot annual cycle (monthly climatology)
+monthly_clim = @chain df_clean begin
+    @group_by(month)
+    @summarize(
+        mean_temp = mean(TAVG),
+        std_temp = std(TAVG)
+    )
+end
+
+let
+    fig = Figure(size=(800, 500))
+    ax = Axis(fig[1, 1],
+        xlabel="Month",
+        ylabel="Temperature (°F)",
+        title="Boston Mean Annual Temperature Cycle ($(minimum(df_clean.year))-$(maximum(df_clean.year)))",
+        xticks=(1:12, ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]))
+    lines!(ax, monthly_clim.month, monthly_clim.mean_temp, linewidth=2, color=:steelblue)
+    band!(ax, monthly_clim.month,
+        monthly_clim.mean_temp .- monthly_clim.std_temp,
+        monthly_clim.mean_temp .+ monthly_clim.std_temp,
+        alpha=0.3, color=:steelblue)
+    fig
+end
+```
+
+```{julia}
+# Calculate annual mean temperatures to check for trends
+annual_means = @chain df_clean begin
+    @group_by(year)
+    @summarize(mean_temp = mean(TAVG))
+end
+
+let
+    fig = Figure(size=(1000, 400))
+    ax = Axis(fig[1, 1],
+        xlabel="Year",
+        ylabel="Annual Mean Temperature (°F)"
+    )
+    scatter!(ax, annual_means.year, annual_means.mean_temp, markersize=14, color=:steelblue)
+    fig
+end
+```
+
+## Task 2 Implementation: Load and Process CMIP6 Data
+
+```{julia}
+# Define helper function for loading pre-downloaded CMIP6 data
+"""
+Load CMIP6 temperature data from a local NetCDF file and convert times to DateTime.
+"""
+function load_cmip6_data(file_path::String)
+    ds = NCDataset(file_path)
+    tas_data = ds["tas"][:]
+    time_cf = ds["time"][:]
+    close(ds)
+
+    # Convert CFTime to Julia DateTime
+    # Extract year, month, day, hour from CFTime object
+    time_data = [DateTime(
+        Dates.year(t),
+        Dates.month(t),
+        Dates.day(t),
+        Dates.hour(t),
+        Dates.minute(t),
+        Dates.second(t)
+    ) for t in time_cf]
+
+    return tas_data, time_data
+end
+
+"""
+Aggregate 3-hourly temperature data to daily averages using local time.
+"""
+function aggregate_to_daily(tas_3hr, time_3hr; utc_offset=-5)
+    # The data starts at 03:00 UTC. For Boston (UTC-5), we want days starting at local midnight
+    # which is 05:00 UTC. Since we have 03:00, 06:00, 09:00..., we'll start at 06:00 UTC
+    # which gives us a day from 01:00 EST to 01:00 EST - close enough for our purposes
+
+    # Group into days (8 consecutive 3-hour periods = 24 hours)
+    n_3hr_per_day = 8
+    n_days = div(length(tas_3hr), n_3hr_per_day)
+
+    daily_temp = Vector{Float64}(undef, n_days)
+    daily_dates = Vector{Date}(undef, n_days)
+
+    for i in 1:n_days
+        # Get indices for this day's 8 values (starting from index 1)
+        idx_start = (i - 1) * n_3hr_per_day + 1
+        idx_end = i * n_3hr_per_day
+
+        # Calculate daily mean, skipping missing values
+        daily_vals = collect(skipmissing(tas_3hr[idx_start:idx_end]))
+        if isempty(daily_vals)
+            daily_temp[i] = NaN
+        else
+            daily_temp[i] = mean(daily_vals)
+        end
+
+        # Assign date (use the date of the first value of the day)
+        daily_dates[i] = Date(time_3hr[idx_start])
+    end
+
+    # Convert Kelvin to Fahrenheit: F = (K - 273.15) * 9/5 + 32
+    daily_temp_f = @. (daily_temp - 273.15) * 9 / 5 + 32
+
+    return daily_temp_f, daily_dates
+end
+```
+
+```{julia}
+# Load the pre-downloaded NetCDF files
+hist_file = joinpath(lab_dir, "boston_historical.nc")
+ssp370_file = joinpath(lab_dir, "boston_ssp370.nc")
+
+tas_hist_3hr, time_hist_3hr = load_cmip6_data(hist_file)
+tas_ssp370_3hr, time_ssp370_3hr = load_cmip6_data(ssp370_file)
+```
+
+```{julia}
+# Aggregate historical data to daily (using a period that overlaps with obs: 1995-2014)
+hist_start = DateTime(1995, 1, 1)
+hist_end = DateTime(2014, 12, 31, 23, 59, 59)
+hist_idx = (time_hist_3hr .>= hist_start) .& (time_hist_3hr .<= hist_end)
+tas_hist_3hr_subset = tas_hist_3hr[hist_idx]
+time_hist_3hr_subset = time_hist_3hr[hist_idx]
+
+tas_hist_daily, dates_hist_daily = aggregate_to_daily(tas_hist_3hr_subset, time_hist_3hr_subset)
+```
+
+```{julia}
+# Select two future periods from SSP3-7.0: near-term (2020-2040) and far-term (2070-2099)
+near_start = DateTime(2020, 1, 1)
+near_end = DateTime(2040, 12, 31, 23, 59, 59)
+near_idx = (time_ssp370_3hr .>= near_start) .& (time_ssp370_3hr .<= near_end)
+tas_ssp370_near_3hr = tas_ssp370_3hr[near_idx]
+time_ssp370_near_3hr = time_ssp370_3hr[near_idx]
+
+tas_ssp370_near_daily, dates_ssp370_near_daily = aggregate_to_daily(tas_ssp370_near_3hr, time_ssp370_near_3hr)
+
+far_start = DateTime(2070, 1, 1)
+far_end = DateTime(2099, 12, 31, 23, 59, 59)
+far_idx = (time_ssp370_3hr .>= far_start) .& (time_ssp370_3hr .<= far_end)
+tas_ssp370_far_3hr = tas_ssp370_3hr[far_idx]
+time_ssp370_far_3hr = time_ssp370_3hr[far_idx]
+
+tas_ssp370_far_daily, dates_ssp370_far_daily = aggregate_to_daily(tas_ssp370_far_3hr, time_ssp370_far_3hr)
+```
+
+```{julia}
+# Create DataFrames for easier manipulation
+df_gcm_hist = DataFrame(
+    date=dates_hist_daily,
+    temp=tas_hist_daily,
+    year=year.(dates_hist_daily),
+    month=month.(dates_hist_daily)
+)
+
+df_ssp370_near = DataFrame(
+    date=dates_ssp370_near_daily,
+    temp=tas_ssp370_near_daily,
+    year=year.(dates_ssp370_near_daily),
+    month=month.(dates_ssp370_near_daily)
+)
+
+df_ssp370_far = DataFrame(
+    date=dates_ssp370_far_daily,
+    temp=tas_ssp370_far_daily,
+    year=year.(dates_ssp370_far_daily),
+    month=month.(dates_ssp370_far_daily)
+)
+
+# Align observations with GCM historical period
+df_obs_hist = @chain df_clean begin
+    @filter(year >= 1995 && year <= 2014)
+end
+```
+
+```{julia}
+# Compare annual cycles
+obs_monthly = @chain df_obs_hist begin
+    @group_by(month)
+    @summarize(mean_temp = mean(TAVG))
+end
+gcm_monthly = @chain df_gcm_hist begin
+    @group_by(month)
+    @summarize(mean_temp = mean(temp))
+end
+
+let
+    fig = Figure(size=(900, 500))
+    ax = Axis(fig[1, 1],
+        xlabel="Month",
+        ylabel="Temperature (°F)",
+        title="Annual Cycle Comparison: Observations vs GCM Historical (1995-2014)",
+        xticks=(1:12, ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]))
+    lines!(ax, obs_monthly.month, obs_monthly.mean_temp, linewidth=2, color=:steelblue, label="Observations")
+    lines!(ax, gcm_monthly.month, gcm_monthly.mean_temp, linewidth=2, color=:coral, label="GCM Historical")
+    axislegend(ax, position=:lt)
+    fig
+end
+```
+
+## Task 3 Implementation: Delta Method
+
+```{julia}
+# Calculate monthly mean bias for each calendar month
+monthly_bias = @chain df_gcm_hist begin
+    @group_by(month)
+    @summarize(gcm_mean = mean(temp))
+    @left_join(
+        @chain(df_obs_hist, @group_by(month), @summarize(obs_mean = mean(TAVG))),
+        month
+    )
+    @mutate(bias = gcm_mean - obs_mean)
+end
+
+monthly_bias
+```
+
+```{julia}
+# Visualize monthly bias
+let
+    fig = Figure(size=(900, 500))
+    ax = Axis(fig[1, 1],
+        xlabel="Month",
+        ylabel="Temperature Bias (°F)",
+        title="Monthly Mean Temperature Bias: GCM - Observations",
+        xticks=(1:12, ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]))
+    barplot!(ax, monthly_bias.month, monthly_bias.bias, color=:coral)
+    hlines!(ax, [0], color=:black, linestyle=:dash, linewidth=1)
+    fig
+end
+```
+
+```{julia}
+# Function to apply delta method correction
+function apply_delta_method(gcm_temps, gcm_dates, monthly_bias_df)
+    corrected_temps = similar(gcm_temps)
+
+    for i in eachindex(gcm_temps)
+        m = month(gcm_dates[i])
+        bias = monthly_bias_df[monthly_bias_df.month.==m, :bias][1]
+        corrected_temps[i] = gcm_temps[i] - bias
+    end
+
+    return corrected_temps
+end
+
+# Apply to both future scenarios
+df_ssp370_near.temp_delta = apply_delta_method(df_ssp370_near.temp, df_ssp370_near.date, monthly_bias)
+df_ssp370_far.temp_delta = apply_delta_method(df_ssp370_far.temp, df_ssp370_far.date, monthly_bias)
+```
+
+```{julia}
+# Verify correction preserves warming signal
+# Compare annual cycles
+near_monthly_raw = @chain df_ssp370_near begin
+    @group_by(month)
+    @summarize(mean_temp = mean(temp))
+end
+near_monthly_delta = @chain df_ssp370_near begin
+    @group_by(month)
+    @summarize(mean_temp = mean(temp_delta))
+end
+
+let
+    fig = Figure(size=(1000, 600))
+    ax = Axis(fig[1, 1],
+        xlabel="Month",
+        ylabel="Temperature (°F)",
+        title="Delta Method: Annual Cycle for SSP3-7.0 Near-Term (2020-2040)",
+        xticks=(1:12, ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]))
+    lines!(ax, obs_monthly.month, obs_monthly.mean_temp, linewidth=2, color=:steelblue, label="Historical Obs")
+    lines!(ax, near_monthly_raw.month, near_monthly_raw.mean_temp, linewidth=2, color=:coral, label="GCM Raw")
+    lines!(ax, near_monthly_delta.month, near_monthly_delta.mean_temp, linewidth=2, color=:green, label="Delta Corrected", linestyle=:dash)
+    axislegend(ax, position=:lt)
+    fig
+end
+```
+
+```{julia}
+# Calculate warming signal (difference between future and historical)
+warming_raw_near = mean(df_ssp370_near.temp) - mean(df_gcm_hist.temp)
+warming_delta_near = mean(df_ssp370_near.temp_delta) - mean(Float64.(df_obs_hist.TAVG))
+
+warming_raw_far = mean(df_ssp370_far.temp) - mean(df_gcm_hist.temp)
+warming_delta_far = mean(df_ssp370_far.temp_delta) - mean(Float64.(df_obs_hist.TAVG))
+```
+
+## Task 4 Implementation: Quantile-Quantile Mapping
+
+```{julia}
+# Implement empirical QQ-mapping
+# Fit empirical CDFs to historical data
+obs_hist_temps = Float64.(df_obs_hist.TAVG)
+gcm_hist_temps = df_gcm_hist.temp
+
+# Create empirical CDFs
+ecdf_obs = ecdf(obs_hist_temps)
+ecdf_gcm = ecdf(gcm_hist_temps)
+```
+
+```{julia}
+# Function to apply empirical QQ-mapping
+function apply_qqmap_empirical(gcm_temps, ecdf_gcm, obs_hist_temps)
+    corrected_temps = similar(gcm_temps)
+
+    for i in eachindex(gcm_temps)
+        # Find percentile in GCM distribution
+        p = ecdf_gcm(gcm_temps[i])
+
+        # Clamp to valid range (avoid extrapolation issues)
+        p = clamp(p, 0.001, 0.999)
+
+        # Map to same percentile in observed distribution
+        corrected_temps[i] = quantile(obs_hist_temps, p)
+    end
+
+    return corrected_temps
+end
+
+# Apply to future scenarios
+df_ssp370_near.temp_qqmap = apply_qqmap_empirical(df_ssp370_near.temp, ecdf_gcm, obs_hist_temps)
+df_ssp370_far.temp_qqmap = apply_qqmap_empirical(df_ssp370_far.temp, ecdf_gcm, obs_hist_temps)
+```
+
+```{julia}
+# Verify the correction by comparing CDFs
+# Create CDFs for near-term scenario
+ecdf_near_raw = ecdf(df_ssp370_near.temp)
+ecdf_near_qqmap = ecdf(df_ssp370_near.temp_qqmap)
+
+# Plot CDFs
+temp_range = range(0, 100, length=200)
+
+let
+    fig = Figure(size=(1000, 600))
+    ax = Axis(fig[1, 1],
+        xlabel="Temperature (°F)",
+        ylabel="Cumulative Probability",
+        title="Cumulative Distribution Functions: Historical and Near-Term")
+
+    lines!(ax, temp_range, ecdf_obs.(temp_range), linewidth=2, color=:steelblue, label="Obs Historical")
+    lines!(ax, temp_range, ecdf_gcm.(temp_range), linewidth=2, color=:coral, linestyle=:dash, label="GCM Historical")
+    lines!(ax, temp_range, ecdf_near_raw.(temp_range), linewidth=2, color=:orange, linestyle=:dash, label="GCM Near-term Raw")
+    lines!(ax, temp_range, ecdf_near_qqmap.(temp_range), linewidth=2, color=:green, label="GCM Near-term QQ-mapped")
+
+    axislegend(ax, position=:rb)
+    fig
+end
+```
+
+```{julia}
+# Create QQ-plots to visualize the correction
+percentiles = 0.01:0.01:0.99
+
+obs_quantiles = quantile(obs_hist_temps, percentiles)
+gcm_hist_quantiles = quantile(gcm_hist_temps, percentiles)
+near_raw_quantiles = quantile(df_ssp370_near.temp, percentiles)
+near_qqmap_quantiles = quantile(df_ssp370_near.temp_qqmap, percentiles)
+
+let
+    fig = Figure(size=(1200, 500))
+
+    ax1 = Axis(fig[1, 1],
+        xlabel="Observed Quantiles (°F)",
+        ylabel="GCM Quantiles (°F)",
+        title="QQ-Plot: Historical Period",
+        aspect=DataAspect())
+    scatter!(ax1, obs_quantiles, gcm_hist_quantiles, markersize=3, color=:coral, label="Before Correction")
+    lines!(ax1, [0, 100], [0, 100], color=:black, linestyle=:dash, linewidth=1, label="1:1 Line")
+    axislegend(ax1, position=:lt)
+
+    ax2 = Axis(fig[1, 2],
+        xlabel="Observed Quantiles (°F)",
+        ylabel="GCM Quantiles (°F)",
+        title="QQ-Plot: Near-Term Raw vs QQ-mapped",
+        aspect=DataAspect())
+    scatter!(ax2, obs_quantiles, near_raw_quantiles, markersize=3, color=:coral, label="Raw")
+    scatter!(ax2, obs_quantiles, near_qqmap_quantiles, markersize=3, color=:green, label="QQ-mapped")
+    lines!(ax2, [0, 100], [0, 100], color=:black, linestyle=:dash, linewidth=1, label="1:1 Line")
+    axislegend(ax2, position=:lt)
+
+    fig
+end
+```
+
+```{julia}
+# Compute monthly mean for QQ-mapping (will be used in Task 5)
+near_monthly_qqmap = @chain df_ssp370_near begin
+    @group_by(month)
+    @summarize(mean_temp = mean(temp_qqmap))
+end
+```
+
+## Task 5 Implementation: Compare and Validate
+
+```{julia}
+# Compare warming signals for both methods
+warming_qqmap_near = mean(df_ssp370_near.temp_qqmap) - mean(Float64.(df_obs_hist.TAVG))
+warming_qqmap_far = mean(df_ssp370_far.temp_qqmap) - mean(Float64.(df_obs_hist.TAVG))
+```
+
+```{julia}
+# Visual comparison: annual cycle for all methods
+let
+    fig = Figure(size=(1000, 600))
+    ax = Axis(fig[1, 1],
+        xlabel="Month",
+        ylabel="Temperature (°F)",
+        title="Annual Cycle Comparison: All Methods (Near-term 2020-2040)",
+        xticks=(1:12, ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]))
+    lines!(ax, obs_monthly.month, obs_monthly.mean_temp, linewidth=2.5, color=:black, label="Historical Obs")
+    lines!(ax, near_monthly_raw.month, near_monthly_raw.mean_temp, linewidth=2, color=:coral, label="Raw GCM")
+    lines!(ax, near_monthly_delta.month, near_monthly_delta.mean_temp, linewidth=2, color=:green, linestyle=:dash, label="Delta")
+    lines!(ax, near_monthly_qqmap.month, near_monthly_qqmap.mean_temp, linewidth=2, color=:purple, linestyle=:dot, label="QQ-map")
+    axislegend(ax, position=:lt)
+    fig
+end
+```
+
+```{julia}
+# Calculate seasonal warming to assess preservation of change signal
+winter_months = [12, 1, 2]
+spring_months = [3, 4, 5]
+summer_months = [6, 7, 8]
+fall_months = [9, 10, 11]
+
+seasons = ["Winter", "Spring", "Summer", "Fall"]
+season_months_list = [winter_months, spring_months, summer_months, fall_months]
+
+raw_warming = Float64[]
+delta_warming = Float64[]
+qqmap_warming = Float64[]
+
+for months in season_months_list
+    hist_obs_seasonal = @chain df_obs_hist begin
+        @filter(month in !!months)
+        @summarize(mean_temp = mean(TAVG))
+        @pull(mean_temp)
+        first
+    end
+
+    hist_gcm_seasonal = @chain df_gcm_hist begin
+        @filter(month in !!months)
+        @summarize(mean_temp = mean(temp))
+        @pull(mean_temp)
+        first
+    end
+
+    near_raw_seasonal = @chain df_ssp370_near begin
+        @filter(month in !!months)
+        @summarize(mean_temp = mean(temp))
+        @pull(mean_temp)
+        first
+    end
+
+    near_delta_seasonal = @chain df_ssp370_near begin
+        @filter(month in !!months)
+        @summarize(mean_temp = mean(temp_delta))
+        @pull(mean_temp)
+        first
+    end
+
+    near_qqmap_seasonal = @chain df_ssp370_near begin
+        @filter(month in !!months)
+        @summarize(mean_temp = mean(temp_qqmap))
+        @pull(mean_temp)
+        first
+    end
+
+    push!(raw_warming, near_raw_seasonal - hist_gcm_seasonal)
+    push!(delta_warming, near_delta_seasonal - hist_obs_seasonal)
+    push!(qqmap_warming, near_qqmap_seasonal - hist_obs_seasonal)
+end
+
+seasonal_warming = DataFrame(
+    season=seasons,
+    raw=raw_warming,
+    delta=delta_warming,
+    qqmap=qqmap_warming
+)
+```
+
+```{julia}
+# Visualize seasonal warming
+let
+    fig = Figure(size=(900, 500))
+    ax = Axis(fig[1, 1],
+        xlabel="Season",
+        ylabel="Warming Signal (°F)",
+        title="Seasonal Warming: Near-term vs Historical",
+        xticks=(1:4, seasonal_warming.season))
+
+    barplot!(ax, [1, 2, 3, 4] .- 0.25, seasonal_warming.raw, width=0.2, color=:coral, label="Raw GCM")
+    barplot!(ax, [1, 2, 3, 4], seasonal_warming.delta, width=0.2, color=:green, label="Delta")
+    barplot!(ax, [1, 2, 3, 4] .+ 0.25, seasonal_warming.qqmap, width=0.2, color=:purple, label="QQ-map")
+
+    hlines!(ax, [0], color=:black, linestyle=:dash, linewidth=1)
+    axislegend(ax, position=:lt)
+
+    fig
+end
+```
+
+## Task 6 Implementation: Reflection
+
+### Remaining Biases
+
+Both bias correction methods assume that the statistical relationship between model and observations is stationary over time.
+This means they cannot correct for biases in the model's representation of physical processes that may change under warming.
+For example, if the model incorrectly simulates the frequency or intensity of extreme heat events, or if urban heat island effects intensify differently than the model predicts, these biases will persist.
+Additionally, the QQ-mapping approach is limited by the observed historical range, so unprecedented extreme temperatures in the future may be poorly corrected.
+
+### Method Selection for Urban Heat Management
+
+For urban heat management decisions in Boston, I would recommend the delta method.
+The key reason is that delta method preserves the model's projected changes in variability and extremes, which are critical for infrastructure planning and public health preparedness.
+QQ-mapping artificially constrains the future distribution to match the historical distribution shape, which may underestimate the increase in extreme heat events that matter most for heat-related mortality and cooling system demands.
+While QQ-mapping better corrects the mean bias, the delta method's preservation of the climate change signal in extremes outweighs this advantage for adaptation planning.
+
+### Stationarity Assumption Breakdown
+
+The stationarity assumption could break down for temperature if the climate system crosses thresholds that fundamentally change local temperature dynamics.
+For example, if sea ice loss or changes in the jet stream alter Boston's exposure to Arctic air masses, the historical relationship between modeled and observed winter temperatures would no longer hold.
+Similarly, if land use changes (urbanization, deforestation) or soil moisture feedbacks intensify differently than the model represents, the bias structure could change.
+More subtly, if the model's warm bias is partly due to errors in simulating cloud cover, and cloud feedbacks change under warming, the bias itself would evolve over time.
+
+## References
+
+::: {#refs}
+:::
