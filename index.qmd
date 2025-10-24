@@ -122,16 +122,22 @@ Finally, visualize the annual cycle comparing observations vs the historical GCM
 data_path = joinpath(lab_dir, "USW00014739.csv")
 df = @chain begin
     CSV.read(data_path, DataFrame)
+    # Compute daily average from min and max, preserving missing values
     @mutate(
         TAVG = ifelse.(ismissing.(TMIN) .| ismissing.(TMAX), missing, (TMIN .+ TMAX) ./ 2),
     )
-    @mutate(TAVG = TAVG / 10.0) # Convert to degrees C
+    # GHCN data is in tenths of degrees C, so divide by 10
+    @mutate(TAVG = TAVG / 10.0)
+    # Rename DATE column to lowercase for consistency
     @rename(date = DATE)
+    # Extract year and month for aggregation
     @mutate(year = year(date), month = month(date))
+    # Keep only the columns we need
     @select(date, year, month, TAVG)
 end
 
 # Filter to years with at least 80% complete data
+# This removes years with too many missing observations
 yearly_counts = @chain df begin
     @group_by(year)
     @summarize(n_obs = sum(!ismissing(TAVG)), n_total = n())
@@ -143,6 +149,7 @@ good_years_df = @chain yearly_counts begin
 end
 good_years = good_years_df.year
 
+# Keep only complete years and drop remaining missing values
 df_clean = @chain df begin
     @filter(year in !!good_years)
     dropmissing(:TAVG)
@@ -154,13 +161,21 @@ end
 # Helper functions for CMIP6 data
 """
 Load CMIP6 temperature data from a local NetCDF file and convert times to DateTime.
+
+This function reads NetCDF files (the standard format for CMIP6 data) and extracts:
+- tas_data: temperature values in Kelvin
+- time_cf: time coordinates in CF (Climate & Forecast) format
+
+The CF time format is then converted to Julia's DateTime type for easier manipulation.
 """
 function load_cmip6_data(file_path::String)
     ds = NCDataset(file_path)
-    tas_data = ds["tas"][:]
-    time_cf = ds["time"][:]
+    tas_data = ds["tas"][:]  # Temperature at surface (tas)
+    time_cf = ds["time"][:]  # Time in CF format
     close(ds)
 
+    # Convert CF time objects to Julia DateTime
+    # We extract year, month, day, hour, minute, second from each CF time
     time_data = [DateTime(
         Dates.year(t), Dates.month(t), Dates.day(t),
         Dates.hour(t), Dates.minute(t), Dates.second(t)
@@ -171,46 +186,57 @@ end
 
 """
 Aggregate 3-hourly temperature data to daily averages.
+
+CMIP6 provides 3-hourly instantaneous temperatures (8 values per day).
+We compute daily averages by grouping consecutive 3-hour periods.
+This ignores daylight saving time - a common simplification in climate studies.
 """
 function aggregate_to_daily(tas_3hr, time_3hr)
-    n_3hr_per_day = 8
+    n_3hr_per_day = 8  # 24 hours / 3 hours per timestep
     n_days = div(length(tas_3hr), n_3hr_per_day)
 
+    # Preallocate output arrays
     daily_temp = Vector{Float64}(undef, n_days)
     daily_dates = Vector{Date}(undef, n_days)
 
     for i in 1:n_days
+        # Get indices for this day's 8 timesteps
         idx_start = (i - 1) * n_3hr_per_day + 1
         idx_end = i * n_3hr_per_day
+
+        # Compute mean, handling any missing values
         daily_vals = collect(skipmissing(tas_3hr[idx_start:idx_end]))
         daily_temp[i] = isempty(daily_vals) ? NaN : mean(daily_vals)
+
+        # Use the first timestep's date as the day's date
         daily_dates[i] = Date(time_3hr[idx_start])
     end
 
-    daily_temp_c = daily_temp .- 273.15  # Convert K to C
+    # Convert from Kelvin to Celsius
+    daily_temp_c = daily_temp .- 273.15
     return daily_temp_c, daily_dates
 end
 
-# Load and process CMIP6 data
+# Load the full CMIP6 files (historical and SSP3-7.0 scenario)
 hist_file = joinpath(lab_dir, "boston_historical.nc")
 ssp370_file = joinpath(lab_dir, "boston_ssp370.nc")
 
 tas_hist_3hr, time_hist_3hr = load_cmip6_data(hist_file)
 tas_ssp370_3hr, time_ssp370_3hr = load_cmip6_data(ssp370_file)
 
-# Process historical period (1995-2014)
+# Extract and process historical period (1995-2014) for bias correction calibration
 hist_start = DateTime(1995, 1, 1)
 hist_end = DateTime(2014, 12, 31, 23, 59, 59)
 hist_idx = (time_hist_3hr .>= hist_start) .& (time_hist_3hr .<= hist_end)
 tas_hist_daily, dates_hist_daily = aggregate_to_daily(tas_hist_3hr[hist_idx], time_hist_3hr[hist_idx])
 
-# Process near-term period (2020-2040)
+# Extract and process near-term future period (2020-2040) to apply corrections
 near_start = DateTime(2020, 1, 1)
 near_end = DateTime(2040, 12, 31, 23, 59, 59)
 near_idx = (time_ssp370_3hr .>= near_start) .& (time_ssp370_3hr .<= near_end)
 tas_ssp370_near_daily, dates_ssp370_near_daily = aggregate_to_daily(tas_ssp370_3hr[near_idx], time_ssp370_3hr[near_idx])
 
-# Create DataFrames
+# Create DataFrames for easier manipulation with TidierData
 df_gcm_hist = DataFrame(
     date=dates_hist_daily, temp=tas_hist_daily,
     year=year.(dates_hist_daily), month=month.(dates_hist_daily)
@@ -221,11 +247,12 @@ df_ssp370_near = DataFrame(
     year=year.(dates_ssp370_near_daily), month=month.(dates_ssp370_near_daily)
 )
 
+# Filter observations to match the GCM historical period
 df_obs_hist = @chain df_clean begin
     @filter(year >= 1995 && year <= 2014)
 end
 
-# Compute monthly climatologies
+# Compute monthly climatologies (long-term monthly averages)
 obs_monthly = @chain df_obs_hist begin
     @group_by(month)
     @summarize(mean_temp = mean(TAVG))
@@ -268,12 +295,33 @@ Then apply the correction to future values: $T^\text{corr}_{\text{fut}}(d, m, y)
 
 Follow these steps:
 
-1. Calculate the monthly mean bias by grouping both `df_gcm_hist` and `df_obs_hist` by month, computing their means, joining them, and computing the difference.
-2. Create a bar plot visualizing the monthly bias.
-3. Write a function `apply_delta_method(gcm_temps, gcm_dates, monthly_bias_df)` that applies the bias correction to a vector of temperatures and dates.
-4. Apply your function to the near-term data and add a new column `temp_delta` to `df_ssp370_near`.
-5. Create monthly climatologies for both raw and delta-corrected near-term data.
-6. Visualize the annual cycle showing historical observations, raw GCM near-term, and delta-corrected near-term temperatures.
+1. **Calculate monthly mean bias**: Create a DataFrame called `monthly_bias` with columns `month`, `gcm_mean`, `obs_mean`, and `bias`.
+   Use `@chain`, `@group_by`, `@summarize`, `@left_join`, and `@mutate` to compute the bias for each month.
+2. **Visualize the bias**: Create a bar plot using `barplot!()` showing `monthly_bias.bias` by month.
+   Set `xticks=MONTH_LABELS`, add a horizontal line at zero with `hlines!()`, and label the y-axis as "Temperature Bias ($^\circ$C)".
+3. **Write the correction function**: Implement `apply_delta_method(gcm_temps, gcm_dates, monthly_bias_df)` that:
+   - Creates a vector `corrected_temps` to store results
+   - Loops through each temperature value
+   - Uses `month(date)` to extract the month from each date
+   - Looks up the bias for that month in `monthly_bias_df`
+   - Subtracts the bias from the temperature
+4. **Apply the correction**: Add a new column `temp_delta` to `df_ssp370_near` by calling your function with `df_ssp370_near.temp`, `df_ssp370_near.date`, and `monthly_bias`.
+5. **Compute monthly climatologies**: Create `near_monthly_raw` and `near_monthly_delta` DataFrames by grouping `df_ssp370_near` by month and computing the mean of `temp` and `temp_delta` respectively.
+6. **Create comparison plot**: Make a figure showing three lines (use `lines!()` for each):
+   - `obs_monthly` (blue, labeled "Historical Obs")
+   - `near_monthly_raw` (coral/red, labeled "GCM Raw")
+   - `near_monthly_delta` (green with dashed linestyle, labeled "Delta Corrected")
+
+   Set `xticks=MONTH_LABELS`, add a legend with `axislegend()`, and title it "Delta Method: Annual Cycle for SSP3-7.0 Near-Term (2020-2040)".
+
+::: {.callout-tip}
+## Hints
+
+- Use `Dates.month()` to extract the month number from a `Date` object
+- To look up bias for month `m`: `monthly_bias_df[monthly_bias_df.month .== m, :bias][1]`
+- Use `similar(gcm_temps)` to create an output vector of the same size and type
+- The figure should show that delta correction shifts the GCM output down but preserves the warming signal
+:::
 :::
 
 ```{julia}
@@ -292,21 +340,31 @@ Implement QQ-mapping to correct the full distribution of temperature values.
 
 Follow these steps:
 
-1. Extract the observed and GCM historical temperatures as vectors (`obs_hist_temps` and `gcm_hist_temps`).
-2. Use `ecdf()` from StatsBase.jl to fit empirical cumulative distribution functions to both datasets.
-3. Write a function `apply_qqmap_empirical(gcm_temps, ecdf_gcm, obs_hist_temps)` that:
-   - For each temperature value, finds its percentile in the GCM CDF
-   - Clamps the percentile to the range [0.001, 0.999] to avoid extrapolation
-   - Maps to the same percentile in the observed distribution using `quantile()`
-4. Apply your function to the near-term data and add a new column `temp_qqmap` to `df_ssp370_near`.
-5. Create a QQ-plot comparing observed and GCM quantiles for the historical period, showing the 1:1 line.
+1. **Extract temperature vectors**: Create `obs_hist_temps` by converting `df_obs_hist.TAVG` to `Float64`, and create `gcm_hist_temps` from `df_gcm_hist.temp`.
+2. **Fit empirical CDFs**: Use `ecdf()` from StatsBase.jl to create `ecdf_obs` and `ecdf_gcm` from the historical data.
+3. **Write the mapping function**: Implement `apply_qqmap_empirical(gcm_temps, ecdf_gcm, obs_hist_temps)` that:
+   - Creates a vector `corrected_temps` to store results
+   - Loops through each temperature value in `gcm_temps`
+   - Finds its percentile `p` in the GCM distribution using `ecdf_gcm(gcm_temps[i])`
+   - Clamps `p` to [0.001, 0.999] using `clamp(p, 0.001, 0.999)`
+   - Maps to the same percentile in observations using `quantile(obs_hist_temps, p)`
+4. **Apply the correction**: Add a new column `temp_qqmap` to `df_ssp370_near` by calling your function with `df_ssp370_near.temp`, `ecdf_gcm`, and `obs_hist_temps`.
+5. **Create QQ-plot**:
+   - Define `percentiles = 0.01:0.01:0.99`
+   - Compute `obs_quantiles` and `gcm_hist_quantiles` using `quantile()` for each dataset
+   - Create a scatter plot with `obs_quantiles` on the x-axis and `gcm_hist_quantiles` on the y-axis
+   - Add a 1:1 reference line using `lines!(ax, [-20, 40], [-20, 40], ...)` with dashed linestyle
+   - Use `aspect=DataAspect()` to make the plot square
+   - Label axes as "Observed Quantiles ($^\circ$C)" and "GCM Quantiles ($^\circ$C)"
 
 ::: {.callout-tip}
 ## Hints
 
-- Use `ecdf_gcm(value)` to get the percentile of a value in the GCM distribution
-- Use `quantile(obs_hist_temps, p)` to get the value at percentile `p` in the observed distribution
+- `Float64.(vector)` converts a vector to Float64 type
+- `ecdf_gcm(value)` returns the percentile (0 to 1) of `value` in the GCM distribution
+- `quantile(obs_hist_temps, p)` returns the temperature value at percentile `p` in the observed distribution
 - The `clamp(x, low, high)` function constrains `x` to the range [low, high]
+- Points on the 1:1 line in a QQ-plot indicate perfect distributional agreement
 :::
 :::
 
@@ -321,19 +379,35 @@ Now we compare the delta method and QQ-mapping approaches to understand their st
 ::: {.callout-important}
 ## Instructions
 
-Create a single figure showing monthly mean temperature for the near-term period (2020-2040) using all four approaches:
+Create a comprehensive comparison figure showing monthly mean temperature for the near-term period (2020-2040).
 
-1. Compute the monthly mean for QQ-mapped temperatures (`near_monthly_qqmap`)
-2. Create a figure with 4 lines:
-   - Historical observations (`obs_monthly`)
-   - Raw GCM near-term (`near_monthly_raw`)
-   - Delta-corrected near-term (`near_monthly_delta`)
-   - QQ-mapped near-term (`near_monthly_qqmap`)
+Follow these steps:
+
+1. **Compute QQ-mapped monthly climatology**: Create `near_monthly_qqmap` by grouping `df_ssp370_near` by month and computing the mean of `temp_qqmap`.
+2. **Create comparison figure**: Make a single figure with four lines using different colors and line styles:
+   - **Historical observations** (`obs_monthly.mean_temp`): black, solid line, linewidth=2.5, label="Historical Obs"
+   - **Raw GCM near-term** (`near_monthly_raw.mean_temp`): coral/red, solid line, linewidth=2, label="Raw GCM"
+   - **Delta-corrected** (`near_monthly_delta.mean_temp`): green, dashed line (`linestyle=:dash`), linewidth=2, label="Delta"
+   - **QQ-mapped** (`near_monthly_qqmap.mean_temp`): purple, dotted line (`linestyle=:dot`), linewidth=2, label="QQ-map"
+3. **Format the plot**:
+   - Set `xticks=MONTH_LABELS` to show month names
+   - Title: "Annual Cycle Comparison: All Methods (Near-term 2020-2040)"
+   - Y-axis label: "Temperature ($^\circ$C)" using LaTeX formatting
+   - Add legend with `axislegend(ax, position=:lt)`
 
 After creating the plot, examine it carefully and consider:
 
-- How do the two correction methods differ?
-- What does the QQ-mapped line reveal about this method's treatment of the warming signal?
+- How do the two correction methods differ in their treatment of future temperatures?
+- What does the position of the QQ-mapped line reveal about this method's treatment of the warming signal?
+- Which method shows temperatures closer to historical observations? Why might this be problematic for climate impact assessment?
+
+::: {.callout-tip}
+## Hints
+
+- All four DataFrames should have a `month` column and a column with mean temperatures
+- Use distinct colors and linestyles to make the lines easily distinguishable
+- The figure should clearly show that QQ-mapping dampens the warming signal compared to the delta method
+:::
 :::
 
 ```{julia}
